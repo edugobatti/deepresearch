@@ -1,0 +1,15 @@
+# Backend Dependencies
+fastapi
+uvicorn[standard]
+websockets
+langgraph
+langchain
+langchain-openai
+langchain-community
+googlesearch-python
+requests
+pydantic
+websocket
+streamlit
+asyncio-mqtt
+python-dotenv
