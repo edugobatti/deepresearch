@@ -12,7 +12,7 @@ from datetime import datetime
 import re
 from bs4 import BeautifulSoup
 
-# Tente importar newspaper3k para melhor extração de conteúdo
+
 try:
     from newspaper import Article
     NEWSPAPER_AVAILABLE = True
@@ -20,11 +20,11 @@ except ImportError:
     NEWSPAPER_AVAILABLE = False
     print("Biblioteca newspaper3k não encontrada. Para melhor extração de conteúdo, instale com: pip install newspaper3k")
 
-# Importa Ollama da nova localização
+
 try:
     from langchain_ollama import OllamaLLM
 except ImportError:
-    # Fallback para versão antiga
+
     from langchain_community.llms import Ollama as OllamaLLM
 
 class ResearchState(TypedDict):
@@ -49,7 +49,7 @@ def google_search_tool(query: str) -> List[Dict]:
         for i, url in enumerate(search_results):
             try:
                 results.append({
-                    "title": url,  # Título temporário, será substituído depois
+                    "title": url,  
                     "url": url,
                     "snippet": f"Resultado {i+1} para '{query}'"
                 })
@@ -84,7 +84,6 @@ def extract_web_content(url: str, timeout: int = 10) -> Dict[str, str]:
     }
     
     try:
-        # MÉTODO 1: Tenta extrair com newspaper3k se disponível
         if NEWSPAPER_AVAILABLE:
             try:
                 article = Article(url)
@@ -100,12 +99,9 @@ def extract_web_content(url: str, timeout: int = 10) -> Dict[str, str]:
                     }
             except Exception as e:
                 print(f"Falha ao extrair com newspaper3k: {str(e)}. Tentando método alternativo.")
-                # Continua para o método alternativo se newspaper falhar
-        
-        # MÉTODO 2: Faz a requisição HTTP e usa BeautifulSoup
+
         response = requests.get(url, timeout=timeout, headers=headers)
-        
-        # Verifica se a requisição foi bem-sucedida
+
         if response.status_code != 200:
             return {
                 "title": url,
@@ -114,23 +110,18 @@ def extract_web_content(url: str, timeout: int = 10) -> Dict[str, str]:
                 "error": True
             }
         
-        # Cria objeto BeautifulSoup para parsing do HTML
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Remove elementos que normalmente não contêm conteúdo relevante
         for element in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'button']):
             element.decompose()
         
-        # Extrai o título
         title = url
         title_tag = soup.find('title')
         if title_tag:
             title = title_tag.get_text().strip()
         
-        # ESTRATÉGIA 1: Tenta encontrar elementos semânticos mais específicos
         main_content = ""
         
-        # Procura por elementos que provavelmente contêm o conteúdo principal
         content_selectors = [
             'article', 'main', 'div[role="main"]', 
             'div[class*="content"]', 'div[id*="content"]',
@@ -147,35 +138,28 @@ def extract_web_content(url: str, timeout: int = 10) -> Dict[str, str]:
                 main_elements.extend(elements)
         
         if main_elements:
-            # Filtra elementos muito pequenos
             substantial_elements = [elem for elem in main_elements if len(elem.get_text(strip=True)) > 100]
             if substantial_elements:
-                # Usa o elemento principal com mais texto
                 main_content = max([elem.get_text(separator=' ', strip=True) for elem in substantial_elements], key=len)
         
-        # ESTRATÉGIA 2: Se não encontrou conteúdo significativo, tenta com parágrafos
         if len(main_content) < 1000:
             paragraphs = soup.find_all('p')
-            # Filtra parágrafos vazios ou muito pequenos
             substantial_paragraphs = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20]
             if substantial_paragraphs:
                 main_content = ' '.join(substantial_paragraphs)
         
-        # ESTRATÉGIA 3: Se ainda não tiver conteúdo suficiente, pega todo o texto do body
         if len(main_content) < 1000:
             body = soup.find('body')
             if body:
                 main_content = body.get_text(separator=' ', strip=True)
         
-        # Limpa o conteúdo
         main_content = re.sub(r'\s+', ' ', main_content).strip()
-        
-        # Trunca o conteúdo se for muito grande (para evitar sobrecarregar o LLM)
-        max_content_length = 20000  # Aumentado de 8000 para 20000
+          
+        max_content_length = 20000  
         if len(main_content) > max_content_length:
             main_content = main_content[:max_content_length] + "... [conteúdo truncado]"
         
-        # Log de diagnóstico
+ 
         content_length = len(main_content)
         print(f"Extraídos {content_length} caracteres de {url}")
         if content_length < 1000:
@@ -200,10 +184,8 @@ class DeepResearchAgent:
     def __init__(self, llm_provider: str, api_key: Optional[str] = None, 
                  model_name: Optional[str] = None, status_callback: Optional[Callable[[str, str, Any], None]] = None):
         
-        # Callback para status updates
         self.status_callback = status_callback
         
-        # Configura LLM
         if llm_provider == "openai":
             if not api_key:
                 raise ValueError("API key necessária para OpenAI")
@@ -230,7 +212,6 @@ class DeepResearchAgent:
         timestamp = datetime.now().strftime('%H:%M:%S')
         print(f"[{timestamp}] {message}")
         
-        # Envia para callback se disponível
         if self.status_callback:
             self.status_callback(status_type, message, data)
     
@@ -247,10 +228,8 @@ class DeepResearchAgent:
         """Invoca LLM de forma consistente"""
         try:
             if self.is_chat_model:
-                # Para modelos de chat (OpenAI)
                 response = await self.llm.ainvoke([HumanMessage(content=prompt)])
             else:
-                # Para modelos de completion (Ollama)
                 response = await self.llm.ainvoke(prompt)
             
             return self.extract_content(response)
@@ -289,10 +268,8 @@ class DeepResearchAgent:
         self.log_status("Planejando próxima busca...", "plan")
         
         if state.get("iteration", 0) == 0:
-            # Primeira iteração
             search_query = state["query"]
         else:
-            # Iterações subsequentes - gera nova query baseada na análise
             self.log_status(f"Gerando nova query baseada na análise anterior (Iteração {state.get('iteration', 0) + 1})", "plan")
             
             prompt = f"""
@@ -322,27 +299,26 @@ class DeepResearchAgent:
         query = state["current_search_query"]
         self.log_status(f"Executando busca: {query}", "search", {"query": query})
         
-        # Executa busca usando a função helper
         search_results = execute_google_search(query, num_results=5)
         
-        # Log dos resultados encontrados
+
         valid_results = [r for r in search_results if not r.get('error')]
         self.log_status(f"Encontrados {len(valid_results)} resultados válidos", "search", {
             "count": len(valid_results),
-            "urls": [r.get('url', '') for r in valid_results[:3]]  # Primeiras 3 URLs
+            "urls": [r.get('url', '') for r in valid_results[:3]]  
         })
         
-        # Extrai conteúdo de cada URL encontrada
+
         enriched_results = []
         for result in valid_results:
             url = result.get('url', '')
             if url:
                 self.log_status(f"Extraindo conteúdo de: {url}", "extract")
                 
-                # Extrai conteúdo da página
+
                 content_data = extract_web_content(url)
                 
-                # Adiciona resultado enriquecido
+
                 enriched_results.append({
                     "title": content_data.get("title", result.get("title", "")),
                     "url": url,
@@ -351,7 +327,7 @@ class DeepResearchAgent:
                     "error": content_data.get("error", False)
                 })
                 
-                # Log de diagnóstico sobre o conteúdo extraído
+
                 content_length = len(content_data.get("content", ""))
                 self.log_status(f"Extraídos {content_length} caracteres de {url}", "extract_detail", {
                     "url": url,
@@ -359,7 +335,6 @@ class DeepResearchAgent:
                     "status": "ok" if content_length > 1000 else "baixo"
                 })
         
-        # Atualiza os resultados de busca
         all_search_results = state.get("search_results", [])
         all_search_results.extend(enriched_results)
         state["search_results"] = all_search_results
@@ -373,9 +348,9 @@ class DeepResearchAgent:
         iteration = state.get("iteration", 0) + 1
         self.log_status(f"Analisando resultados (Iteração {iteration}/{state.get('max_iterations', 5)})", "analyze")
         
-        recent_results = state["search_results"][-5:]  # Últimos 5 resultados
+        recent_results = state["search_results"][-5:] 
         
-        # Prepara resumo dos resultados para log
+
         results_summary = []
         for r in recent_results:
             if not r.get('error'):
@@ -385,13 +360,13 @@ class DeepResearchAgent:
             "titles": results_summary[:3] 
         })
         
-        # Prepara texto com conteúdo das páginas para o LLM
+
         results_text = ""
         for i, r in enumerate(recent_results):
             if not r.get('error'):
-                # Limita o tamanho do conteúdo para cada resultado
+
                 content = r.get('content', '')
-                # Aumentado de 2000 para 5000
+
                 if len(content) > 5000:
                     content = content[:5000] + "... [conteúdo truncado]"
                 
@@ -429,12 +404,12 @@ class DeepResearchAgent:
         self.log_status("Processando análise com LLM...", "analyze")
         analysis_content = await self.invoke_llm(prompt)
         
-        # Atualiza análise
+
         current_analysis = state.get("analysis", "")
         state["analysis"] = current_analysis + "\n\n" + analysis_content
         state["iteration"] = iteration
         
-        # Extrai principais insights para log
+
         insights = analysis_content[:200] + "..." if len(analysis_content) > 200 else analysis_content
         
         self.log_status(f"Análise concluída - Iteração {iteration}", "analyze_complete", {
@@ -453,7 +428,6 @@ class DeepResearchAgent:
             self.log_status(f"Número máximo de iterações atingido ({max_iterations})", "decision")
             return "finish"
         
-        # Análise simples para decidir se continuar
         analysis = state.get("analysis", "")
         if len(analysis) > 2000 and "informações suficientes" in analysis.lower():
             self.log_status("Informações suficientes coletadas", "decision")
@@ -469,7 +443,7 @@ class DeepResearchAgent:
         total_results = len(state.get("search_results", []))
         total_queries = len(state.get("search_queries", []))
         
-        # Prepara lista de fontes usadas
+
         sources = []
         for result in state.get("search_results", []):
             if not result.get("error", False) and result.get("url") and result.get("title"):
@@ -478,7 +452,6 @@ class DeepResearchAgent:
                     "url": result.get("url", "")
                 })
         
-        # Remove duplicatas
         unique_sources = []
         seen_urls = set()
         for source in sources:

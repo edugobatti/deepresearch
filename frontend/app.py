@@ -9,14 +9,12 @@ import uuid
 from threading import Thread
 import queue
 
-# Configuração da página
 st.set_page_config(
     page_title="Deep Research Service",
     page_icon="🔍",
     layout="wide"
 )
 
-# CSS personalizado
 st.markdown("""
 <style>
     .main-header {
@@ -101,7 +99,6 @@ def format_status_message(event: dict) -> str:
     message = data.get('message', '')
     details = data.get('details', {})
     
-    # Formatação específica para o status baseado no tipo de evento
     if event_type == 'start':
         return f"🚀 Iniciando pesquisa"
     elif event_type == 'plan' and 'query' in details:
@@ -131,7 +128,6 @@ def format_status_message(event: dict) -> str:
     elif event_type == 'decision':
         return f"🤔 {message}"
     elif message:
-        # Para mensagens genéricas, adiciona emoji baseado no tipo
         emojis = {
             'pipeline_start': '⚙️',
             'connected': '🔗',
@@ -150,7 +146,6 @@ def format_event_message(event: dict) -> str:
     timestamp = data.get('timestamp', '')
     details = data.get('details', {})
     
-    # Formatação especial para diferentes tipos de eventos
     if event_type == 'search' and 'query' in details:
         message = f"🔍 {message}"
     elif event_type == 'plan' and 'query' in details:
@@ -185,7 +180,6 @@ def sse_consumer(research_id: str, event_queue: queue.Queue):
             'Cache-Control': 'no-cache',
         }
         
-        # Usa requests com stream=True para SSE
         response = requests.get(url, stream=True, headers=headers, timeout=300)
         
         if response.status_code != 200:
@@ -198,7 +192,6 @@ def sse_consumer(research_id: str, event_queue: queue.Queue):
             })
             return
         
-        # Processa eventos manualmente linha por linha
         event_data = ""
         event_type = None
         
@@ -211,7 +204,6 @@ def sse_consumer(research_id: str, event_queue: queue.Queue):
                 else:
                     continue
             else:
-                # Linha vazia indica fim do evento
                 if event_type and event_data:
                     try:
                         data = json.loads(event_data)
@@ -220,7 +212,6 @@ def sse_consumer(research_id: str, event_queue: queue.Queue):
                             'data': data
                         })
                         
-                        # Para se evento de desconexão
                         if event_type == 'disconnected':
                             break
                             
@@ -228,7 +219,6 @@ def sse_consumer(research_id: str, event_queue: queue.Queue):
                         print(f"Erro ao decodificar JSON: {e}")
                         print(f"Dados recebidos: {event_data}")
                     
-                    # Reset para próximo evento
                     event_data = ""
                     event_type = None
                     
@@ -256,14 +246,12 @@ def process_event_queue():
             event = st.session_state.event_queue.get_nowait()
             st.session_state.real_time_events.append(event)
             
-            # Atualiza progresso baseado no tipo de evento
             event_type = event.get('type', '')
             data = event.get('data', {})
             
             if event_type == 'start':
                 st.session_state.research_progress = 10
             elif event_type == 'plan':
-                # Incrementa progresso baseado na iteração
                 current_progress = st.session_state.research_progress
                 st.session_state.research_progress = min(current_progress + 10, 90)
             elif event_type == 'search':
@@ -278,19 +266,14 @@ def process_event_queue():
                 st.session_state.research_progress = 100
                 st.session_state.is_researching = False
                 
-                # Extrai relatório final - CORREÇÃO: Captura o resultado de forma mais robusta
                 if 'result' in data:
                     st.session_state.final_report = data.get('result', '')
-                    # Adiciona um print para depuração
-                    # print(f"Relatório capturado: {st.session_state.final_report[:100]}...")
             elif event_type == 'error':
                 st.session_state.is_researching = False
             
-            # Atualiza a mensagem de status para cada evento
             status_message = format_status_message(event)
             if status_message:
                 st.session_state.current_task = status_message
-                # Armazena também a última atualização para comparação
                 st.session_state.last_status_update = status_message
                 
     except queue.Empty:
@@ -298,19 +281,15 @@ def process_event_queue():
 
 def check_backend_status():
     """Verifica se o backend está funcionando (com cache)"""
-    # Usa cache do Streamlit para evitar múltiplas chamadas
     current_time = time.time()
     
-    # Verifica se já temos um status recente (últimos 30 segundos)
     if 'backend_check_time' in st.session_state and 'backend_status' in st.session_state:
         if current_time - st.session_state.backend_check_time < 30:
             return st.session_state.backend_status
-    
-    # Faz nova verificação
+
     try:
         response = requests.get("http://localhost:8000/health", timeout=3)
         status = response.status_code == 200
-        # Armazena no session state
         st.session_state.backend_check_time = current_time
         st.session_state.backend_status = status
         return status
@@ -323,7 +302,6 @@ def start_research(query: str, max_iterations: int, llm_provider: str,
                   api_key: Optional[str] = None, model_name: Optional[str] = None):
     """Inicia uma nova pesquisa"""
     try:
-        # Prepara dados da requisição
         request_data = {
             "query": query,
             "llm_provider": llm_provider,
@@ -335,7 +313,6 @@ def start_research(query: str, max_iterations: int, llm_provider: str,
         if model_name:
             request_data["model_name"] = model_name
         
-        # Inicia pesquisa
         response = requests.post(
             "http://localhost:8000/research", 
             json=request_data,
@@ -346,7 +323,6 @@ def start_research(query: str, max_iterations: int, llm_provider: str,
             result = response.json()
             research_id = result.get("research_id")
             
-            # Inicia thread SSE
             st.session_state.research_id = research_id
             st.session_state.event_queue = queue.Queue()
             st.session_state.sse_thread = Thread(
@@ -368,7 +344,6 @@ def start_research(query: str, max_iterations: int, llm_provider: str,
 def main():
     initialize_session_state()
     
-    # Header principal
     st.markdown("""
     <div class="main-header">
         <h1>🔍 Deep Research Service</h1>
@@ -376,11 +351,8 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Sidebar para configurações
     with st.sidebar:
         st.header("⚙️ Configurações")
-        
-        # Status do backend (com verificação manual)
         backend_status = check_backend_status()
         if backend_status:
             st.success("✅ Backend conectado")
@@ -390,14 +362,12 @@ def main():
         
         st.divider()
         
-        # Seleção do provedor LLM
         llm_provider = st.selectbox(
             "🤖 Provedor LLM",
             ["openai", "ollama"],
             help="Escolha entre OpenAI ou Ollama local"
         )
         
-        # Configurações específicas do provedor
         api_key = None
         model_name = None
         
@@ -412,7 +382,7 @@ def main():
                 ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
                 help="Modelo da OpenAI a ser usado"
             )
-        else:  # ollama
+        else:  
             model_name = st.text_input(
                 "🦙 Modelo Ollama",
                 value="qwen2.5:7b",
@@ -422,7 +392,6 @@ def main():
         
         st.divider()
         
-        # Configurações avançadas
         st.subheader("🛠️ Configurações Avançadas")
         max_iterations = st.slider(
             "Máximo de iterações",
@@ -432,15 +401,11 @@ def main():
             help="Número máximo de ciclos de pesquisa"
         )
 
-    # Layout principal com duas colunas
     colPrincipal, colAndamento = st.columns([2, 1])
     
-    # Coluna Principal
     with colPrincipal:
-        # Interface principal
         st.header("🔍 Nova Pesquisa")
-        
-        # Campo de consulta
+
         query = st.text_area(
             "Digite sua consulta de pesquisa:",
             height=120,
@@ -448,7 +413,6 @@ def main():
             help="Seja específico e detalhado para obter melhores resultados"
         )
         
-        # Validação e botões
         col1, col2, col3 = st.columns([2, 1, 1])
         
         with col1:
@@ -465,7 +429,6 @@ def main():
                 type="primary",
                 use_container_width=True
             ):
-                # Limpa estado anterior
                 st.session_state.real_time_events = []
                 st.session_state.final_report = ""
                 st.session_state.is_researching = True
@@ -473,7 +436,6 @@ def main():
                 st.session_state.current_task = "Iniciando pesquisa..."
                 st.session_state.last_status_update = ""
                 
-                # Inicia pesquisa
                 if start_research(query, max_iterations, llm_provider, api_key, model_name):
                     st.rerun()
         
@@ -505,38 +467,26 @@ def main():
                     st.rerun()
         
         
-    
-    # Coluna de Andamento - CORREÇÃO: Garantindo que os eventos são exibidos
     with colAndamento:
-        # Título sempre visível
         st.header("📊 Progresso da Pesquisa")
         
-        # Processa eventos da fila
         process_event_queue()
         
-        # Exibe a contagem de eventos para depuração
-        # st.caption(f"Eventos recebidos: {len(st.session_state.real_time_events)}")
-        
-        # Verifica se há eventos para mostrar
         if st.session_state.is_researching or st.session_state.real_time_events:
             
-            # Componente de status (indicador visual do estado atual)
             status_label = st.session_state.current_task if st.session_state.current_task else "🔄 Aguardando atualizações..."
             status_state = "running" if st.session_state.is_researching else "complete"
             
-            # Status principal sempre expandido
             with st.status(status_label, state=status_state, expanded=False) as status:
                 if not st.session_state.real_time_events:
                     status.write("⏳ Aguardando os primeiros eventos...")
                 
-                # Exibe eventos em ordem cronológica inversa (mais recentes primeiro)
                 for event in reversed(st.session_state.real_time_events):
                     event_type = event.get('type', '')
                     data = event.get('data', {})
                     message = data.get('message', '')
                     details = data.get('details', {})
                     
-                    # Ícones para os tipos de eventos
                     icons = {
                         'start': '🚀',
                         'plan': '📋',
@@ -556,7 +506,6 @@ def main():
                     
                     icon = icons.get(event_type, '📌')
                     
-                    # Formatação baseada no tipo de evento
                     if event_type == 'search' and 'query' in details:
                         status.write(f"{icon} **Buscando:** {details['query']}")
                     elif event_type == 'plan' and 'query' in details:
@@ -584,7 +533,6 @@ def main():
                     else:
                         status.write(f"{icon} {message}")
                     
-                    # Detalhes extras para certos tipos de eventos
                     if event_type == 'analyze_complete' and 'insights_preview' in details:
                         status.write(f"💡 **Preview:** {details['insights_preview'][:150]}...")
                     
@@ -592,22 +540,16 @@ def main():
                         word_count = details.get('word_count', 0)
                         status.write(f"📊 Relatório gerado com {word_count} palavras")
         else:
-            # Mensagem quando não há pesquisa em andamento
             st.info("Inicie uma nova pesquisa para visualizar o progresso em tempo real.")
-        
-        # Exibe o status do relatório final para depuração
+
         if st.session_state.final_report:
             st.success("✅ Relatório final disponível!")
 
-    # Relatório final - CORREÇÃO: Simplificado para garantir exibição
     if st.session_state.final_report:
         st.header("###📋 Relatório Final")
-        
-        # Usando markdown para exibir o texto com formatação
+
         st.markdown(f"<div class='research-container'><div class='report-content'>{st.session_state.final_report}</div></div>", unsafe_allow_html=True)
 
-        
-        # Botões de ação
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -632,12 +574,10 @@ def main():
                 st.session_state.real_time_events = []
                 st.rerun()
         
-    # Auto-refresh para atualizar eventos enquanto pesquisa está em andamento
     if st.session_state.is_researching:
         time.sleep(0.5)  # Pausa curta
         st.rerun()
     
-    # Rodapé
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666; padding: 20px;'>

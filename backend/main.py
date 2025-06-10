@@ -13,7 +13,7 @@ from datetime import datetime
 import uuid
 from collections import defaultdict
 
-# Configurar logging
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# Middleware CORS
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,12 +32,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Armazenamento em memória para eventos SSE
 research_events = defaultdict(list)
 
 class ResearchRequest(BaseModel):
     query: str
-    llm_provider: str  # "openai" or "ollama"
+    llm_provider: str 
     api_key: Optional[str] = None
     model_name: Optional[str] = None
     max_iterations: int = 3
@@ -49,12 +48,9 @@ class ResearchResponse(BaseModel):
 
 def create_sse_message(event_type: str, data: dict) -> str:
     """Cria mensagem SSE formatada"""
-    # Garante que o JSON seja válido e em uma única linha
     json_data = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
-    # Remove quebras de linha do JSON
     json_data = json_data.replace('\n', ' ').replace('\r', '')
-    
-    # Formato SSE padrão
+
     message = f"event: {event_type}\n"
     message += f"data: {json_data}\n\n"
     return message
@@ -62,8 +58,7 @@ def create_sse_message(event_type: str, data: dict) -> str:
 async def event_stream(research_id: str) -> AsyncGenerator[str, None]:
     """Gera stream de eventos SSE"""
     logger.info(f"Cliente conectado ao stream: {research_id}")
-    
-    # Envia evento inicial de conexão
+
     yield create_sse_message("connected", {
         "message": "Conectado ao stream de eventos",
         "research_id": research_id,
@@ -71,11 +66,10 @@ async def event_stream(research_id: str) -> AsyncGenerator[str, None]:
     })
     
     sent_index = 0
-    max_wait_time = 300  # 5 minutos máximo
+    max_wait_time = 300  
     start_time = time.time()
     
     while True:
-        # Verifica timeout
         if time.time() - start_time > max_wait_time:
             yield create_sse_message("timeout", {
                 "message": "Timeout do stream",
@@ -83,29 +77,25 @@ async def event_stream(research_id: str) -> AsyncGenerator[str, None]:
             })
             break
             
-        # Verifica se há novos eventos
+
         if research_id in research_events:
             events = research_events[research_id]
-            
-            # Envia apenas eventos novos
+
             while sent_index < len(events):
                 event = events[sent_index]
                 yield create_sse_message(event["type"], event["data"])
                 sent_index += 1
                 
-                # Envia heartbeat para manter conexão viva
+
                 if sent_index % 5 == 0:
                     yield ": heartbeat\n\n"
             
-            # Verifica se a pesquisa foi concluída
             if events and events[-1]["type"] in ["complete", "error", "cancelled"]:
                 logger.info(f"Pesquisa finalizada: {research_id}")
                 break
         
-        # Pequeno delay para não sobrecarregar
         await asyncio.sleep(0.1)
     
-    # Evento final de desconexão
     yield create_sse_message("disconnected", {
         "message": "Stream finalizado",
         "timestamp": datetime.now().isoformat()
@@ -159,7 +149,7 @@ async def research_endpoint(request: ResearchRequest):
     research_id = str(uuid.uuid4())
     logger.info(f"Nova pesquisa iniciada: {research_id} - {request.query[:50]}...")
     
-    # Adiciona evento inicial
+
     research_events[research_id].append({
         "type": "init",
         "data": {
@@ -174,7 +164,7 @@ async def research_endpoint(request: ResearchRequest):
         }
     })
     
-    # Executa pesquisa em background
+
     asyncio.create_task(execute_research(research_id, request))
     
     return ResearchResponse(
@@ -206,13 +196,12 @@ async def execute_research(research_id: str, request: ResearchRequest):
         
         logger.info(f"[{research_id}] Agente criado, iniciando pesquisa...")
         
-        # Executa pesquisa
+
         result = await agent.research(
             query=request.query,
             max_iterations=request.max_iterations
         )
         
-        # Adiciona evento de conclusão
         research_events[research_id].append({
             "type": "complete",
             "data": {
@@ -227,8 +216,7 @@ async def execute_research(research_id: str, request: ResearchRequest):
     except Exception as e:
         error_msg = f"Erro durante pesquisa: {str(e)}"
         logger.error(f"[{research_id}] {error_msg}")
-        
-        # Adiciona evento de erro
+
         research_events[research_id].append({
             "type": "error",
             "data": {
@@ -260,7 +248,7 @@ async def get_research_status(research_id: str):
         "status": status,
         "total_events": len(events),
         "last_event": last_event,
-        "events": events[-10:]  # Últimos 10 eventos
+        "events": events[-10:] 
     }
 
 @app.delete("/research/{research_id}")
