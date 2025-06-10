@@ -1,35 +1,25 @@
-# deep_research_agent.py
-from typing import Dict, Any, Optional, List, Annotated, TypedDict, Callable
+from typing import Dict, Any, Optional, List, TypedDict, Callable
 from langgraph.graph import StateGraph, END, START
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
-from googlesearch import search
-import asyncio
-import json
-import requests
 from datetime import datetime
+import asyncio
 import re
-from bs4 import BeautifulSoup
-
-
-try:
-    from newspaper import Article
-    NEWSPAPER_AVAILABLE = True
-except ImportError:
-    NEWSPAPER_AVAILABLE = False
-    print("Biblioteca newspaper3k não encontrada. Para melhor extração de conteúdo, instale com: pip install newspaper3k")
-
 
 try:
     from langchain_ollama import OllamaLLM
 except ImportError:
-
     from langchain_community.llms import Ollama as OllamaLLM
+
+# Importações das funções de busca
+from search.google_search import execute_google_search, extract_web_content
+from search.arxiv_search import execute_arxiv_search
+from search.wikipedia_search import execute_wikipedia_search
 
 class ResearchState(TypedDict):
     query: str
     search_results: List[Dict]
+    site_summaries: List[Dict]  # Lista para armazenar resumos por site
     analysis: str
     final_report: str
     iteration: int
@@ -37,148 +27,16 @@ class ResearchState(TypedDict):
     search_queries: List[str]
     sources: List[str]
     current_search_query: str
+    search_mode: str  # Campo para controlar o tipo de busca (google, arxiv, wikipedia)
 
-@tool
-def google_search_tool(query: str) -> List[Dict]:
-    """Ferramenta para buscar no Google usando googlesearch-python"""
-    try:
-        results = []
-        # Busca com número fixo de resultados
-        search_results = list(search(query, num_results=5, sleep_interval=1))
-        
-        for i, url in enumerate(search_results):
-            try:
-                results.append({
-                    "title": url,  
-                    "url": url,
-                    "snippet": f"Resultado {i+1} para '{query}'"
-                })
-            except:
-                results.append({
-                    "title": url,
-                    "url": url,
-                    "snippet": f"Resultado {i+1} para '{query}'"
-                })
-        
-        return results
-    except Exception as e:
-        return [{"error": f"Erro na busca: {str(e)}"}]
-
-def execute_google_search(query: str, num_results: int = 5) -> List[Dict]:
-    """Função helper para executar busca no Google"""
-    return google_search_tool.invoke({"query": query})
-
-def extract_web_content(url: str, timeout: int = 10) -> Dict[str, str]:
-    """
-    Extrai o conteúdo de uma página web, incluindo texto principal.
-    
-    Args:
-        url: URL da página a ser acessada
-        timeout: Tempo máximo de espera pela resposta
-        
-    Returns:
-        Dicionário com título, URL e conteúdo extraído
-    """
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
-    try:
-        if NEWSPAPER_AVAILABLE:
-            try:
-                article = Article(url)
-                article.download()
-                article.parse()
-                
-                if article.text and len(article.text) > 500:
-                    return {
-                        "title": article.title or url,
-                        "url": url,
-                        "content": article.text,
-                        "error": False
-                    }
-            except Exception as e:
-                print(f"Falha ao extrair com newspaper3k: {str(e)}. Tentando método alternativo.")
-
-        response = requests.get(url, timeout=timeout, headers=headers)
-
-        if response.status_code != 200:
-            return {
-                "title": url,
-                "url": url,
-                "content": f"Erro ao acessar página: Status {response.status_code}",
-                "error": True
-            }
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        for element in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'form', 'button']):
-            element.decompose()
-        
-        title = url
-        title_tag = soup.find('title')
-        if title_tag:
-            title = title_tag.get_text().strip()
-        
-        main_content = ""
-        
-        content_selectors = [
-            'article', 'main', 'div[role="main"]', 
-            'div[class*="content"]', 'div[id*="content"]',
-            'div[class*="article"]', 'div[id*="article"]',
-            'div[class*="post"]', 'div[id*="post"]',
-            'div[class*="body"]', 'div[id*="body"]',
-            'section[class*="content"]', 'section[id*="content"]'
-        ]
-        
-        main_elements = []
-        for selector in content_selectors:
-            elements = soup.select(selector)
-            if elements:
-                main_elements.extend(elements)
-        
-        if main_elements:
-            substantial_elements = [elem for elem in main_elements if len(elem.get_text(strip=True)) > 100]
-            if substantial_elements:
-                main_content = max([elem.get_text(separator=' ', strip=True) for elem in substantial_elements], key=len)
-        
-        if len(main_content) < 1000:
-            paragraphs = soup.find_all('p')
-            substantial_paragraphs = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20]
-            if substantial_paragraphs:
-                main_content = ' '.join(substantial_paragraphs)
-        
-        if len(main_content) < 1000:
-            body = soup.find('body')
-            if body:
-                main_content = body.get_text(separator=' ', strip=True)
-        
-        main_content = re.sub(r'\s+', ' ', main_content).strip()
-          
-        max_content_length = 20000  
-        if len(main_content) > max_content_length:
-            main_content = main_content[:max_content_length] + "... [conteúdo truncado]"
-        
- 
-        content_length = len(main_content)
-        print(f"Extraídos {content_length} caracteres de {url}")
-        if content_length < 1000:
-            print(f"AVISO: Pouco conteúdo extraído de {url}")
-        
-        return {
-            "title": title,
-            "url": url,
-            "content": main_content,
-            "error": False
-        }
-        
-    except Exception as e:
-        return {
-            "title": url,
-            "url": url,
-            "content": f"Erro ao processar página: {str(e)}",
-            "error": True
-        }
+def execute_search(query: str, search_mode: str = "google", num_results: int = 5) -> List[Dict]:
+    """Função helper para executar busca de acordo com o modo selecionado"""
+    if search_mode == "arxiv":
+        return execute_arxiv_search(query, num_results)
+    elif search_mode == "wikipedia":
+        return execute_wikipedia_search(query, num_results)
+    else:  # default: google
+        return execute_google_search(query, num_results)
 
 class DeepResearchAgent:
     def __init__(self, llm_provider: str, api_key: Optional[str] = None, 
@@ -244,13 +102,15 @@ class DeepResearchAgent:
         # Adiciona nós
         workflow.add_node("plan_search", self.plan_search)
         workflow.add_node("execute_search", self.execute_search)
+        workflow.add_node("summarize_sites", self.summarize_sites)  # Nó para resumir sites individualmente
         workflow.add_node("analyze_results", self.analyze_results)
         workflow.add_node("generate_report", self.generate_report)
         
         # Define fluxo
         workflow.add_edge(START, "plan_search")
         workflow.add_edge("plan_search", "execute_search")
-        workflow.add_edge("execute_search", "analyze_results")
+        workflow.add_edge("execute_search", "summarize_sites")  # Nova etapa no fluxo
+        workflow.add_edge("summarize_sites", "analyze_results")
         workflow.add_conditional_edges(
             "analyze_results",
             self.should_continue,
@@ -264,13 +124,30 @@ class DeepResearchAgent:
         self.graph = workflow.compile()
     
     async def plan_search(self, state: ResearchState) -> ResearchState:
-        """Planeja próxima busca"""
+        """Planeja próxima busca, definindo a query e o modo de busca (Google, arXiv, Wikipedia)"""
         self.log_status("Planejando próxima busca...", "plan")
         
-        if state.get("iteration", 0) == 0:
+        # Controle da alternância de fontes de busca
+        iteration = state.get("iteration", 0)
+        
+        # Define a fonte de busca para esta iteração
+        # Prioriza Google e arXiv sobre Wikipedia
+        if iteration == 0:
+            # Primeira iteração: busca normal no Google
+            search_mode = "google"
+            search_query = state["query"]
+        elif iteration == 1:
+            # Segunda iteração: busca no arXiv para conteúdo acadêmico
+            search_mode = "arxiv"
+            search_query = state["query"]
+        elif iteration == 2:
+            # Terceira iteração: busca na Wikipedia para contexto geral
+            search_mode = "wikipedia"
             search_query = state["query"]
         else:
-            self.log_status(f"Gerando nova query baseada na análise anterior (Iteração {state.get('iteration', 0) + 1})", "plan")
+            # Iterações seguintes: alterna entre fontes priorizadas e refina a busca
+            # Gera uma query refinada com base na análise anterior
+            self.log_status(f"Gerando nova query baseada na análise anterior (Iteração {iteration})", "plan")
             
             prompt = f"""
                     A partir da consulta original: "{state['query']}"
@@ -285,135 +162,331 @@ class DeepResearchAgent:
             
             search_query = await self.invoke_llm(prompt)
             search_query = search_query.strip()
+            
+            # Alterna entre os modos de busca, priorizando Google e arXiv (2:1:1 ratio)
+            search_mode_options = ["google", "arxiv", "google", "wikipedia"]
+            search_mode = search_mode_options[iteration % 4]
         
+        # Armazena o modo de busca e a query
+        state["search_mode"] = search_mode
         state["current_search_query"] = search_query
+        
+        # Registra as queries utilizadas
         search_queries = state.get("search_queries", [])
-        search_queries.append(search_query)
+        search_queries.append(f"{search_mode}: {search_query}")
         state["search_queries"] = search_queries
         
-        self.log_status(f"Query planejada: {search_query}", "plan", {"query": search_query})
+        self.log_status(f"Query planejada: {search_query} (Modo: {search_mode})", "plan", {
+            "query": search_query,
+            "mode": search_mode
+        })
+        
         return state
     
     async def execute_search(self, state: ResearchState) -> ResearchState:
-        """Executa busca no Google e extrai conteúdo das páginas"""
+        """Executa busca na fonte selecionada e extrai conteúdo das páginas"""
         query = state["current_search_query"]
-        self.log_status(f"Executando busca: {query}", "search", {"query": query})
+        search_mode = state.get("search_mode", "google")
         
-        search_results = execute_google_search(query, num_results=5)
-        
-
-        valid_results = [r for r in search_results if not r.get('error')]
-        self.log_status(f"Encontrados {len(valid_results)} resultados válidos", "search", {
-            "count": len(valid_results),
-            "urls": [r.get('url', '') for r in valid_results[:3]]  
+        self.log_status(f"Executando busca: {query} (Modo: {search_mode})", "search", {
+            "query": query,
+            "mode": search_mode
         })
         
-
+        # Executa busca na fonte apropriada
+        search_results = execute_search(query, search_mode=search_mode, num_results=5)
+        
+        # Filtra resultados inválidos
+        valid_results = [r for r in search_results if not r.get('error')]
+        self.log_status(f"Encontrados {len(valid_results)} resultados válidos em {search_mode}", "search", {
+            "count": len(valid_results),
+            "urls": [r.get('url', '') for r in valid_results[:3]],
+            "source": search_mode
+        })
+        
+        # Extrai conteúdo de cada resultado
         enriched_results = []
         for result in valid_results:
             url = result.get('url', '')
             if url:
-                self.log_status(f"Extraindo conteúdo de: {url}", "extract")
+                self.log_status(f"Extraindo conteúdo de: {url} ({search_mode})", "extract")
                 
-
+                # Extrai o conteúdo da página
                 content_data = extract_web_content(url)
                 
-
+                # Adiciona resultado com conteúdo extraído
                 enriched_results.append({
                     "title": content_data.get("title", result.get("title", "")),
                     "url": url,
                     "snippet": result.get("snippet", ""),
                     "content": content_data.get("content", ""),
-                    "error": content_data.get("error", False)
+                    "error": content_data.get("error", False),
+                    "source_type": result.get("source_type", search_mode)
                 })
                 
-
+                # Log do conteúdo extraído
                 content_length = len(content_data.get("content", ""))
                 self.log_status(f"Extraídos {content_length} caracteres de {url}", "extract_detail", {
                     "url": url,
                     "length": content_length,
-                    "status": "ok" if content_length > 1000 else "baixo"
+                    "status": "ok" if content_length > 1000 else "baixo",
+                    "source": search_mode
                 })
         
         all_search_results = state.get("search_results", [])
         all_search_results.extend(enriched_results)
         state["search_results"] = all_search_results
         
-        self.log_status(f"Busca concluída: {len(enriched_results)} páginas extraídas", "search_complete")
+        self.log_status(f"Busca {search_mode} concluída: {len(enriched_results)} páginas extraídas", "search_complete")
+        
+        return state
+    
+    async def summarize_sites(self, state: ResearchState) -> ResearchState:
+        """Gera resumos individuais para cada site com tópicos"""
+        self.log_status("Iniciando geração de resumos por site...", "site_summary")
+        
+        # Obtém os resultados da busca atual
+        recent_results = state["search_results"][-5:]  # Últimos 5 resultados
+        site_summaries = state.get("site_summaries", [])
+        search_mode = state.get("search_mode", "google")
+        
+        for i, result in enumerate(recent_results):
+            if result.get('error', True) or not result.get('content'):
+                continue
+                
+            url = result.get('url', '')
+            title = result.get('title', '')
+            content = result.get('content', '')
+            source_type = result.get('source_type', 'site')
+            
+            # Limita o conteúdo para processamento eficiente
+            if len(content) > 8000:
+                content = content[:8000] + "... [conteúdo truncado]"
+            
+            self.log_status(f"Gerando resumo para: {title} ({source_type})", "site_summary")
+            
+            # Adapta o prompt baseado no tipo de fonte
+            if source_type == "arxiv":
+                prompt = f"""
+                    Analise o seguinte conteúdo extraído do artigo científico do arXiv "{title}" ({url}):
+                    
+                    {content}
+                    
+                    Crie um resumo estruturado seguindo estas diretrizes:
+                    
+                    1. **Identifique os principais tópicos acadêmicos** abordados no artigo.
+                    2. **Para cada tópico**, forneça um título claro e uma descrição técnica concisa.
+                    3. **Crie um resumo científico** do conteúdo completo, com 400 a 1000 palavras.
+                    4. **Extraia quaisquer resultados, métodos ou conclusões importantes** encontrados no artigo.
+                    5. **Destaque a relevância acadêmica** deste artigo para o tema da pesquisa.
+                    
+                    Formato esperado:
+                    
+                    ## Tópicos Principais
+                    
+                    ### [Tópico 1]
+                    [Descrição técnica]
+                    
+                    ### [Tópico 2]
+                    [Descrição técnica]
+                    
+                    ...
+                    
+                    ## Resumo Científico (300-600 palavras)
+                    
+                    [Seu resumo aqui]
+                    
+                    ## Dados e Resultados Relevantes
+                    
+                    - [Resultado/método 1]
+                    - [Resultado/método 2]
+                    ...
+                    """
+            elif source_type == "wikipedia":
+                prompt = f"""
+                    Analise o seguinte conteúdo extraído do artigo da Wikipedia "{title}" ({url}):
+                    
+                    {content}
+                    
+                    Crie um resumo estruturado seguindo estas diretrizes:
+                    
+                    1. **Identifique de 3 a 5 tópicos principais** abordados no artigo.
+                    2. **Para cada tópico**, forneça um título claro e um resumo informativo.
+                    3. **Crie um resumo enciclopédico** do conteúdo completo, com 300 a 600 palavras.
+                    4. **Extraia fatos, datas, definições e informações contextuais** importantes.
+                    5. **Destaque as conexões com outros tópicos relevantes** mencionados no artigo.
+                    
+                    Formato esperado:
+                    
+                    ## Tópicos Principais
+                    
+                    ### [Tópico 1]
+                    [Resumo informativo]
+                    
+                    ### [Tópico 2]
+                    [Resumo informativo]
+                    
+                    ...
+                    
+                    ## Resumo Enciclopédico (300-600 palavras)
+                    
+                    [Seu resumo aqui]
+                    
+                    ## Fatos e Informações Importantes
+                    
+                    - [Fato/definição 1]
+                    - [Fato/definição 2]
+                    ...
+                    """
+            else:  # google ou outro
+                prompt = f"""
+                    Analise o seguinte conteúdo extraído do site "{title}" ({url}):
+                    
+                    {content}
+                    
+                    Crie um resumo estruturado seguindo estas diretrizes:
+                    
+                    1. **Identifique de 3 a 5 tópicos principais** abordados no conteúdo.
+                    2. **Para cada tópico**, forneça um título claro e uma breve descrição.
+                    3. **Crie um resumo abrangente** do conteúdo completo, com 300 a 600 palavras.
+                    4. **Extraia quaisquer fatos, estatísticas ou dados relevantes** encontrados no conteúdo.
+                    
+                    Formato esperado:
+                    
+                    ## Tópicos Principais
+                    
+                    ### [Tópico 1]
+                    [Breve descrição]
+                    
+                    ### [Tópico 2]
+                    [Breve descrição]
+                    
+                    ...
+                    
+                    ## Resumo Geral (300-600 palavras)
+                    
+                    [Seu resumo completo aqui]
+                    
+                    ## Dados Relevantes
+                    
+                    - [Fato/estatística 1]
+                    - [Fato/estatística 2]
+                    ...
+                    """
+            
+            try:
+                summary_content = await self.invoke_llm(prompt)
+                
+                site_summaries.append({
+                    "title": title,
+                    "url": url,
+                    "summary": summary_content,
+                    "source_type": source_type
+                })
+                
+                self.log_status(f"Resumo gerado para: {title} ({source_type})", "site_summary_complete", {
+                    "url": url,
+                    "length": len(summary_content),
+                    "source_type": source_type
+                })
+            except Exception as e:
+                self.log_status(f"Erro ao gerar resumo para {url}: {str(e)}", "error")
+        
+        state["site_summaries"] = site_summaries
+        self.log_status(f"Concluída geração de resumos para {len(site_summaries)} fontes ({search_mode})", "site_summaries_complete")
         
         return state
     
     async def analyze_results(self, state: ResearchState) -> ResearchState:
-        """Analisa resultados da busca incluindo conteúdo extraído"""
+        """Analisa resumos dos sites para gerar análise consolidada"""
         iteration = state.get("iteration", 0) + 1
         self.log_status(f"Analisando resultados (Iteração {iteration}/{state.get('max_iterations', 5)})", "analyze")
         
-        recent_results = state["search_results"][-5:] 
+        # Obtém os resumos de sites mais recentes
+        recent_summaries = state.get("site_summaries", [])[-5:]
+        search_mode = state.get("search_mode", "google")
         
-
-        results_summary = []
-        for r in recent_results:
-            if not r.get('error'):
-                results_summary.append(r.get('title', '')[:50] + '...')
+        # Agrupa resumos por tipo de fonte
+        google_summaries = [s for s in recent_summaries if s.get('source_type') == 'google']
+        arxiv_summaries = [s for s in recent_summaries if s.get('source_type') == 'arxiv']
+        wikipedia_summaries = [s for s in recent_summaries if s.get('source_type') == 'wikipedia']
         
-        self.log_status(f"Processando {len(results_summary)} resultados com conteúdo", "analyze", {
-            "titles": results_summary[:3] 
-        })
+        # Prepara texto consolidado de resumos por tipo
+        summaries_text = ""
         
-
-        results_text = ""
-        for i, r in enumerate(recent_results):
-            if not r.get('error'):
-
-                content = r.get('content', '')
-
-                if len(content) > 5000:
-                    content = content[:5000] + "... [conteúdo truncado]"
-                
-                results_text += f"\n--- DOCUMENTO {i+1} ---\n"
-                results_text += f"Título: {r.get('title', '')}\n"
-                results_text += f"URL: {r.get('url', '')}\n"
-                results_text += f"Conteúdo:\n{content}\n\n"
+        if google_summaries:
+            summaries_text += "\n=== RESUMOS DE SITES GERAIS ===\n"
+            for i, summary in enumerate(google_summaries):
+                summaries_text += f"\n--- RESUMO DO SITE {i+1} ---\n"
+                summaries_text += f"Título: {summary.get('title', '')}\n"
+                summaries_text += f"URL: {summary.get('url', '')}\n"
+                summaries_text += f"Conteúdo:\n{summary.get('summary', '')}\n\n"
+        
+        if wikipedia_summaries:
+            summaries_text += "\n=== RESUMOS DA WIKIPEDIA ===\n"
+            for i, summary in enumerate(wikipedia_summaries):
+                summaries_text += f"\n--- RESUMO WIKIPEDIA {i+1} ---\n"
+                summaries_text += f"Título: {summary.get('title', '')}\n"
+                summaries_text += f"URL: {summary.get('url', '')}\n"
+                summaries_text += f"Conteúdo:\n{summary.get('summary', '')}\n\n"
+        
+        if arxiv_summaries:
+            summaries_text += "\n=== RESUMOS DE ARTIGOS CIENTÍFICOS ===\n"
+            for i, summary in enumerate(arxiv_summaries):
+                summaries_text += f"\n--- RESUMO ARTIGO {i+1} ---\n"
+                summaries_text += f"Título: {summary.get('title', '')}\n"
+                summaries_text += f"URL: {summary.get('url', '')}\n"
+                summaries_text += f"Conteúdo:\n{summary.get('summary', '')}\n\n"
+        
+        # Se não há resumos categorizados, usa o formato antigo
+        if not summaries_text:
+            for i, summary in enumerate(recent_summaries):
+                summaries_text += f"\n--- RESUMO {i+1} ---\n"
+                summaries_text += f"Título: {summary.get('title', '')}\n"
+                summaries_text += f"URL: {summary.get('url', '')}\n"
+                summaries_text += f"Conteúdo:\n{summary.get('summary', '')}\n\n"
         
         prompt = f"""
             Consulta original: "{state['query']}"
             
-            Resultados da busca:
-            {results_text}
+            Resumos das fontes analisadas:
+            {summaries_text}
             
             Análise anterior: "{state.get('analysis', 'Nenhuma análise anterior')}"
             
-            Com base nos conteúdos extraídos das páginas, realize as seguintes tarefas:
+            Com base nos resumos das diferentes fontes, realize as seguintes tarefas:
             
-            1. **Extração de Informações Relevantes**  
-               - Identifique e extraia as principais informações.  
+            1. **Consolidação das Informações por Tipo de Fonte**  
+               - Identifique e consolide as principais informações das diferentes fontes.
+               - Destaque os pontos de vista específicos de cada tipo de fonte (geral, enciclopédica, acadêmica).
                - Organize em **tópicos** com um **resumo detalhado** para cada um.
             
             2. **Identificação de Lacunas de Informação**  
-               - Aponte quais aspectos da query original **ainda não foram respondidos** ou **estão insuficientemente explorados**.  
-               - Sugira o que ainda precisa ser pesquisado.
+               - Aponte quais aspectos da query original **ainda não foram respondidos** ou **estão insuficientemente explorados**.
+               - Sugira o que ainda precisa ser pesquisado e em quais fontes.
             
-            3. **Síntese dos Principais Insights**  
-               - Apresente um **resumo com os principais aprendizados e fatos** encontrados nos conteúdos analisados.
-               - Inclua dados específicos, estatísticas ou informações concretas encontradas nos textos.
+            3. **Síntese Comparativa dos Insights**  
+               - Apresente um **resumo comparando os principais aprendizados e fatos** encontrados nas diferentes fontes.
+               - Destaque pontos de concordância e discordância entre as fontes.
+               - Identifique a complementaridade entre as informações das diferentes fontes.
             
-            
-            Seja detalhado, baseando-se nas informações reais encontradas nos conteúdos.
+            Seja detalhado, baseando-se nas informações reais encontradas nos resumos.
             """
         
-        self.log_status("Processando análise com LLM...", "analyze")
+        self.log_status("Processando análise consolidada com LLM...", "analyze")
         analysis_content = await self.invoke_llm(prompt)
         
-
+        # Atualiza análise
         current_analysis = state.get("analysis", "")
         state["analysis"] = current_analysis + "\n\n" + analysis_content
         state["iteration"] = iteration
         
-
+        # Log de preview da análise
         insights = analysis_content[:200] + "..." if len(analysis_content) > 200 else analysis_content
         
-        self.log_status(f"Análise concluída - Iteração {iteration}", "analyze_complete", {
+        self.log_status(f"Análise concluída - Iteração {iteration} ({search_mode})", "analyze_complete", {
             "iteration": iteration,
+            "mode": search_mode,
             "insights_preview": insights
         })
         
@@ -442,16 +515,83 @@ class DeepResearchAgent:
         
         total_results = len(state.get("search_results", []))
         total_queries = len(state.get("search_queries", []))
+        total_summaries = len(state.get("site_summaries", []))
         
-
+        # Agrupa resumos por tipo de fonte
+        google_summaries = [s for s in state.get("site_summaries", []) if s.get('source_type') == 'google']
+        arxiv_summaries = [s for s in state.get("site_summaries", []) if s.get('source_type') == 'arxiv']
+        wikipedia_summaries = [s for s in state.get("site_summaries", []) if s.get('source_type') == 'wikipedia']
+        
+        # Formata fontes para o prompt, agrupadas por tipo
         sources = []
-        for result in state.get("search_results", []):
-            if not result.get("error", False) and result.get("url") and result.get("title"):
-                sources.append({
-                    "title": result.get("title", ""),
-                    "url": result.get("url", "")
-                })
+        site_summaries_text = ""
         
+        # Processa fontes da Wikipedia
+        if wikipedia_summaries:
+            site_summaries_text += "\n=== RESUMOS DE FONTES ENCICLOPÉDICAS (WIKIPEDIA) ===\n"
+            for i, summary in enumerate(wikipedia_summaries):
+                if summary.get("url") and summary.get("title"):
+                    sources.append({
+                        "title": summary.get("title", ""),
+                        "url": summary.get("url", ""),
+                        "type": "wikipedia"
+                    })
+                    
+                    site_summaries_text += f"\n--- RESUMO WIKIPEDIA {i+1} ---\n"
+                    site_summaries_text += f"Título: {summary.get('title', '')}\n"
+                    site_summaries_text += f"URL: {summary.get('url', '')}\n"
+                    site_summaries_text += f"Resumo:\n{summary.get('summary', '')}\n\n"
+        
+        # Processa fontes acadêmicas (arXiv)
+        if arxiv_summaries:
+            site_summaries_text += "\n=== RESUMOS DE FONTES ACADÊMICAS (ARXIV) ===\n"
+            for i, summary in enumerate(arxiv_summaries):
+                if summary.get("url") and summary.get("title"):
+                    sources.append({
+                        "title": summary.get("title", ""),
+                        "url": summary.get("url", ""),
+                        "type": "arxiv"
+                    })
+                    
+                    site_summaries_text += f"\n--- RESUMO ARTIGO {i+1} ---\n"
+                    site_summaries_text += f"Título: {summary.get('title', '')}\n"
+                    site_summaries_text += f"URL: {summary.get('url', '')}\n"
+                    site_summaries_text += f"Resumo:\n{summary.get('summary', '')}\n\n"
+        
+        # Processa fontes gerais (Google)
+        if google_summaries:
+            site_summaries_text += "\n=== RESUMOS DE FONTES GERAIS ===\n"
+            for i, summary in enumerate(google_summaries):
+                if summary.get("url") and summary.get("title"):
+                    sources.append({
+                        "title": summary.get("title", ""),
+                        "url": summary.get("url", ""),
+                        "type": "google"
+                    })
+                    
+                    site_summaries_text += f"\n--- RESUMO SITE {i+1} ---\n"
+                    site_summaries_text += f"Título: {summary.get('title', '')}\n"
+                    site_summaries_text += f"URL: {summary.get('url', '')}\n"
+                    site_summaries_text += f"Resumo:\n{summary.get('summary', '')}\n\n"
+        
+        # Para fontes não categorizadas
+        other_summaries = [s for s in state.get("site_summaries", []) if s.get('source_type') not in ['google', 'arxiv', 'wikipedia']]
+        if other_summaries:
+            site_summaries_text += "\n=== RESUMOS DE OUTRAS FONTES ===\n"
+            for i, summary in enumerate(other_summaries):
+                if summary.get("url") and summary.get("title"):
+                    sources.append({
+                        "title": summary.get("title", ""),
+                        "url": summary.get("url", ""),
+                        "type": "other"
+                    })
+                    
+                    site_summaries_text += f"\n--- RESUMO FONTE {i+1} ---\n"
+                    site_summaries_text += f"Título: {summary.get('title', '')}\n"
+                    site_summaries_text += f"URL: {summary.get('url', '')}\n"
+                    site_summaries_text += f"Resumo:\n{summary.get('summary', '')}\n\n"
+        
+        # Remove duplicatas mantendo a informação de tipo
         unique_sources = []
         seen_urls = set()
         for source in sources:
@@ -459,14 +599,45 @@ class DeepResearchAgent:
                 unique_sources.append(source)
                 seen_urls.add(source["url"])
         
-        # Formata fontes para o prompt
-        sources_text = "\n".join([f"- {s['title']} ({s['url']})" for s in unique_sources])
+        # Formata fontes para o prompt, agrupadas por tipo
+        sources_by_type = {
+            "wikipedia": [s for s in unique_sources if s.get("type") == "wikipedia"],
+            "arxiv": [s for s in unique_sources if s.get("type") == "arxiv"],
+            "google": [s for s in unique_sources if s.get("type") == "google"],
+            "other": [s for s in unique_sources if s.get("type") == "other"]
+        }
+        
+        sources_text = ""
+        
+        if sources_by_type["wikipedia"]:
+            sources_text += "\n### Fontes Enciclopédicas (Wikipedia)\n"
+            for s in sources_by_type["wikipedia"]:
+                sources_text += f"- {s['title']} ({s['url']})\n"
+        
+        if sources_by_type["arxiv"]:
+            sources_text += "\n### Fontes Acadêmicas (arXiv)\n"
+            for s in sources_by_type["arxiv"]:
+                sources_text += f"- {s['title']} ({s['url']})\n"
+        
+        if sources_by_type["google"]:
+            sources_text += "\n### Fontes Gerais\n"
+            for s in sources_by_type["google"]:
+                sources_text += f"- {s['title']} ({s['url']})\n"
+        
+        if sources_by_type["other"]:
+            sources_text += "\n### Outras Fontes\n"
+            for s in sources_by_type["other"]:
+                sources_text += f"- {s['title']} ({s['url']})\n"
+        
         state["sources"] = sources_text
         
-        self.log_status(f"Compilando dados de {total_results} resultados e {total_queries} buscas", "report", {
+        self.log_status(f"Compilando dados de {total_results} resultados e {total_queries} buscas em {len(unique_sources)} fontes", "report", {
             "total_results": total_results,
             "total_queries": total_queries,
-            "sources_count": len(unique_sources)
+            "sources_count": len(unique_sources),
+            "wikipedia_count": len(sources_by_type["wikipedia"]),
+            "arxiv_count": len(sources_by_type["arxiv"]),
+            "google_count": len(sources_by_type["google"])
         })
         
         prompt = f"""
@@ -476,26 +647,41 @@ class DeepResearchAgent:
             **Queries utilizadas ao longo da investigação:**  
             {', '.join(state.get('search_queries', []))}
             
+            **Resumos dos conteúdos analisados por tipo de fonte:**
+            {site_summaries_text}
+            
             **Análise consolidada dos resultados:**  
             {state.get('analysis', '')}
             
             **Fontes consultadas:**
             {sources_text}
             
-            O conteúdo deve seguir estas diretrizes:
+            O relatório final deve seguir estas diretrizes:
             
-            1.  **Responder à query original de forma etruturada.  
-            2.  **Incluir todos os insights relevantes** extraídos das análises e resultados anteriores.  
-            3.  **Organizar o relatório em seções/tópicos** para facilitar a leitura e compreensão.
-            4.  **Fazer um resumo sobre as informações colhidas por topico (entre 200 a 600 palavras)**  
-            5.  **Citar as principais fontes** de informação utilizadas ao longo do texto.
-            6.  **Apresentar dados concretos e específicos** encontrados durante a pesquisa.
-            7.  **Concluir com um resumo ** dos principais achados e sua relevância.
-            8.  **Sempre colocar os links de referencia**.
+            1. **Responder à query original de forma estruturada e abrangente**
+            
+            2. **Organizar o relatório em seções que integrem informações de diferentes tipos de fontes:**
+               - Incluir uma seção de visão geral/contexto (baseada principalmente em fontes enciclopédicas)
+               - Incluir uma seção de aspectos técnicos/científicos (baseada principalmente em fontes acadêmicas)
+               - Incluir uma seção de aplicações práticas/informações atualizadas (baseada principalmente em fontes gerais)
+            
+            3. **Para cada seção/tópico principal:**
+               - Fornecer um título claro
+               - Apresentar um resumo conciso (400-700 palavras) que sintetize as informações relevantes
+               - Citar apropriadamente as fontes utilizadas
+               - Destacar dados específicos, estatísticas ou fatos relevantes
+            
+            4. **Concluir com uma síntese integrativa:**
+               - Resumir os principais achados 
+               - Identificar como as diferentes fontes se complementam
+               - Apontar qualquer questão não resolvida ou que mereça investigação adicional
+            
+            5. **Incluir todas as referências organizadas por tipo de fonte**
+            
+            Produza um relatório profissional e abrangente que integre harmoniosamente as informações de todos os tipos de fontes.
             """
-
         
-        self.log_status("Processando relatório com LLM...", "report")
+        self.log_status("Processando relatório final com LLM...", "report")
         report_content = await self.invoke_llm(prompt)
         state["final_report"] = report_content
         
@@ -515,18 +701,37 @@ class DeepResearchAgent:
             "max_iterations": max_iterations,
             "iteration": 0,
             "search_results": [],
+            "site_summaries": [],  # Lista para armazenar resumos de sites
             "search_queries": [],
             "analysis": "",
             "final_report": "",
             "sources": [],
-            "current_search_query": ""
+            "current_search_query": "",
+            "search_mode": "google"  # Modo inicial de busca
         }
         
         try:
             self.log_status("Executando pipeline de pesquisa...", "pipeline_start")
             final_state = await self.graph.ainvoke(initial_state)
             self.log_status("Pesquisa concluída com sucesso!", "complete")
-            return final_state.get("final_report", "Erro ao gerar relatório")
+            
+            # Verifica explicitamente se o relatório foi gerado
+            final_report = final_state.get("final_report", "")
+            if not final_report:
+                self.log_status("AVISO: Relatório final vazio, gerando resumo padrão", "warning")
+                final_report = f"""
+                # Relatório de Pesquisa: {query}
+                
+                *Não foi possível gerar um relatório detalhado. Resumo básico:*
+                
+                ## Fontes consultadas
+                {final_state.get("sources", "Nenhuma fonte disponível")}
+                
+                ## Análise 
+                {final_state.get("analysis", "Nenhuma análise disponível")}
+                """
+            
+            return final_report
         except Exception as e:
             error_msg = f"Erro durante pesquisa: {str(e)}"
             self.log_status(error_msg, "error", {"error": str(e)})

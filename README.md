@@ -7,7 +7,7 @@ Um sistema avançado de pesquisa profunda usando LangGraph com múltiplos agente
 - **Múltiplos Agentes Especializados**: Agentes dedicados para diferentes tipos de pesquisa
 - **Interface em Tempo Real**: Acompanhe o progresso da pesquisa em tempo real
 - **Suporte a Múltiplos LLMs**: OpenAI GPT e modelos Ollama locais
-- **Pesquisa**: Google Search, Wikipedia
+- **Pesquisa**: Google Search, Wikipedia e arXiv
 - **Relatórios Estruturados**: Síntese inteligente com principais descobertas
 
 ## 🔧 Ferramentas de Pesquisa Open Source
@@ -15,6 +15,7 @@ Um sistema avançado de pesquisa profunda usando LangGraph com múltiplos agente
 ### Fontes de Busca
 - **Google Search**: Fallback usando googlesearch-python (sem API paga)
 - **Wikipedia**: Conhecimento enciclopédico (português/inglês)
+- **arXiv**: Busca de artigos academicos.
 
 
 ### Processamento de Conteúdo
@@ -124,13 +125,19 @@ python backend/main.py
 
 ```
 deep-research-service/
-├── backend 
-├──├── deep_research_agent.py  #Agentes especializados
-├──├── main.py   # Configurações da API
-├── frontend  
-├──├── app.py    # Streamlit
-├── requirements.txt # Dependências Python
-└── README.md  # Este arquivo
+├── backend/
+│   ├── main.py                      # Configurações da API
+│   ├── deep_research_agent.py      # Agentes especializados
+│   └── search/                     # Módulo de busca
+│       ├── arxiv_search.py         # Busca em arXiv
+│       ├── google_search.py        # Busca no Google
+│       └── wikipedia_search.py     # Busca na Wikipedia
+│
+├── frontend/
+│   └── app.py                      # Interface usando Streamlit
+│
+├── requirements.txt                # Dependências Python
+└── README.md                       # Documentação do projeto
 ```
 
 ## 🔧 Configurações Avançadas

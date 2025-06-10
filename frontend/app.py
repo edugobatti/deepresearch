@@ -46,6 +46,47 @@ st.markdown("""
         overflow-wrap: break-word !important;
         word-wrap: break-word !important;
     }
+    /* Status de andamento da pesquisa */
+    .status-badge {
+        display: inline-block;
+        padding: 5px 10px;
+        border-radius: 15px;
+        font-weight: bold;
+        margin-bottom: 10px;
+    }
+    .status-running {
+        background-color: #4CAF50;
+        color: white;
+    }
+    .status-error {
+        background-color: #F44336;
+        color: white;
+    }
+    .status-warning {
+        background-color: #FF9800;
+        color: white;
+    }
+    .status-complete {
+        background-color: #2196F3;
+        color: white;
+    }
+    /* Estilos para mensagens de timeout */
+    .timeout-message {
+        background-color: #FFF3E0;
+        border-left: 5px solid #FF9800;
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 4px;
+    }
+    /* Animação de carregamento para status em andamento */
+    @keyframes pulse {
+      0% { opacity: 0.6; }
+      50% { opacity: 1; }
+      100% { opacity: 0.6; }
+    }
+    .pulse {
+      animation: pulse 2s infinite ease-in-out;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -73,6 +114,14 @@ def initialize_session_state():
         st.session_state.backend_status = None
     if 'last_status_update' not in st.session_state:
         st.session_state.last_status_update = ""
+    if 'research_start_time' not in st.session_state:
+        st.session_state.research_start_time = None
+    if 'max_research_time' not in st.session_state:
+        st.session_state.max_research_time = 1800  # 30 minutos em segundos
+    if 'research_status' not in st.session_state:
+        st.session_state.research_status = "not_started"
+    if 'last_check_time' not in st.session_state:
+        st.session_state.last_check_time = 0
 
 def get_status_box_class(event_type: str) -> str:
     """Retorna a classe CSS apropriada para o tipo de evento"""
@@ -88,7 +137,9 @@ def get_status_box_class(event_type: str) -> str:
         'report_complete': 'report-box',
         'start': 'info-box',
         'pipeline_start': 'info-box',
-        'decision': 'plan-box'
+        'decision': 'plan-box',
+        'timeout': 'error-box',
+        'cancelled': 'error-box'
     }
     return mapping.get(event_type, 'info-box')
 
@@ -107,7 +158,7 @@ def format_status_message(event: dict) -> str:
         return f"🔍 Buscando: {details['query'][:50]}..." if len(details['query']) > 50 else f"🔍 Buscando: {details['query']}"
     elif event_type == 'search_complete':
         count = details.get('count', 0)
-        return f"✅ Busca concluída: {count} resultados"
+        return f"✅ Busca concluída"
     elif event_type == 'analyze' and 'titles' in details and details['titles']:
         titles = details['titles'][:2]
         if titles:
@@ -118,20 +169,27 @@ def format_status_message(event: dict) -> str:
         return f"📊 Análise concluída - Iteração {iteration}"
     elif event_type == 'report':
         total = details.get('total_results', 0)
-        return f"📝 Gerando relatório ({total} resultados)"
+        if total > 0:
+            return f"📝 Gerando relatório ({total} resultados)"
+        return f"📝 Gerando relatório"
     elif event_type == 'report_complete':
         return f"📄 Relatório completo"
     elif event_type == 'complete':
         return f"🎉 Pesquisa concluída!"
     elif event_type == 'error':
         return f"❌ Erro: {message}"
+    elif event_type == 'timeout':
+        return f"⏱️ Timeout: {message}"
+    elif event_type == 'cancelled':
+        return f"🛑 Pesquisa cancelada: {message}"
     elif event_type == 'decision':
         return f"🤔 {message}"
     elif message:
         emojis = {
             'pipeline_start': '⚙️',
             'connected': '🔗',
-            'disconnected': '🔌'
+            'disconnected': '🔌',
+            'check_result': '🔄'
         }
         emoji = emojis.get(event_type, '⚙️')
         return f"{emoji} {message}"
@@ -164,10 +222,16 @@ def format_event_message(event: dict) -> str:
         message = f"✅ {message}"
     elif event_type == 'error':
         message = f"❌ {message}"
+    elif event_type == 'timeout':
+        message = f"⏱️ {message}"
+    elif event_type == 'cancelled':
+        message = f"🛑 {message}"
     elif event_type == 'start':
         message = f"🚀 {message}"
     elif event_type == 'decision':
         message = f"🤔 {message}"
+    elif event_type == 'check_result':
+        message = f"🔄 {message}"
     
     return message
 
@@ -180,7 +244,7 @@ def sse_consumer(research_id: str, event_queue: queue.Queue):
             'Cache-Control': 'no-cache',
         }
         
-        response = requests.get(url, stream=True, headers=headers, timeout=300)
+        response = requests.get(url, stream=True, headers=headers, timeout=1800)
         
         if response.status_code != 200:
             event_queue.put({
@@ -201,20 +265,33 @@ def sse_consumer(research_id: str, event_queue: queue.Queue):
                     event_type = line.split(':', 1)[1].strip()
                 elif line.startswith('data:'):
                     event_data = line.split(':', 1)[1].strip()
+                elif line.startswith(':'):
+                    # Heartbeat, continua
+                    continue
                 else:
                     continue
             else:
                 if event_type and event_data:
                     try:
                         data = json.loads(event_data)
+                        
+                        # Adiciona evento à fila - não modifica st.session_state aqui
                         event_queue.put({
                             'type': event_type,
                             'data': data
                         })
                         
-                        if event_type == 'disconnected':
+                        # Se é um evento de finalização
+                        if event_type in ['disconnected', 'complete', 'error', 'timeout', 'cancelled']:
+                            # Adicione uma solicitação para verificar o resultado
+                            event_queue.put({
+                                'type': 'check_result',
+                                'data': {
+                                    'message': 'Verificando resultado final',
+                                    'timestamp': datetime.now().isoformat()
+                                }
+                            })
                             break
-                            
                     except json.JSONDecodeError as e:
                         print(f"Erro ao decodificar JSON: {e}")
                         print(f"Dados recebidos: {event_data}")
@@ -224,7 +301,7 @@ def sse_consumer(research_id: str, event_queue: queue.Queue):
                     
     except requests.exceptions.Timeout:
         event_queue.put({
-            'type': 'error',
+            'type': 'timeout',
             'data': {
                 'message': 'Timeout na conexão SSE',
                 'timestamp': datetime.now().isoformat()
@@ -239,18 +316,59 @@ def sse_consumer(research_id: str, event_queue: queue.Queue):
             }
         })
 
+def verify_research_status():
+    """Verifica o status atual da pesquisa no backend"""
+    if not st.session_state.research_id:
+        return False
+        
+    try:
+        response = requests.get(
+            f"http://localhost:8000/research/{st.session_state.research_id}",
+            timeout=5
+        )
+        
+        if response.status_code == 200:
+            result_data = response.json()
+            status = result_data.get("status", "unknown")
+            
+            # Atualiza status e resultado se necessário
+            st.session_state.research_status = status
+            
+            if status in ["completed", "timeout", "failed", "cancelled"]:
+                st.session_state.is_researching = False
+                
+                if "result" in result_data and result_data["result"]:
+                    st.session_state.final_report = result_data["result"]
+                    return True
+            
+            return status in ["completed", "timeout", "failed", "cancelled"]
+        else:
+            return False
+    except Exception as e:
+        print(f"Erro ao verificar status: {str(e)}")
+        return False
+
 def process_event_queue():
     """Processa eventos da fila"""
     try:
+        # Processa eventos da fila
+        events_processed = False
         while not st.session_state.event_queue.empty():
+            events_processed = True
             event = st.session_state.event_queue.get_nowait()
             st.session_state.real_time_events.append(event)
             
             event_type = event.get('type', '')
             data = event.get('data', {})
             
+            # Processa eventos específicos
             if event_type == 'start':
                 st.session_state.research_progress = 10
+                st.session_state.research_status = "running"
+                
+                # Iniciar temporizador quando a pesquisa começa
+                if not st.session_state.research_start_time:
+                    st.session_state.research_start_time = time.time()
             elif event_type == 'plan':
                 current_progress = st.session_state.research_progress
                 st.session_state.research_progress = min(current_progress + 10, 90)
@@ -265,19 +383,77 @@ def process_event_queue():
             elif event_type == 'complete':
                 st.session_state.research_progress = 100
                 st.session_state.is_researching = False
+                st.session_state.research_status = "completed"
+                st.session_state.research_start_time = None  # Reset do temporizador
                 
+                # Verifica se recebemos o relatório final
                 if 'result' in data:
                     st.session_state.final_report = data.get('result', '')
-            elif event_type == 'error':
+                else:
+                    # Se não tiver o resultado no evento, faça uma solicitação explícita
+                    verify_research_status()
+            elif event_type in ['error', 'timeout', 'cancelled', 'disconnected']:
                 st.session_state.is_researching = False
+                st.session_state.research_status = event_type if event_type != 'disconnected' else "completed"
+                st.session_state.research_start_time = None  # Reset do temporizador
+                
+                # Verifica se recebemos algum resultado parcial
+                if 'result' in data and data['result']:
+                    st.session_state.final_report = data['result']
+                else:
+                    # Se não tiver o resultado no evento, faça uma solicitação explícita
+                    verify_research_status()
+            elif event_type == 'check_result':
+                # Evento explícito para verificar o resultado
+                if not st.session_state.final_report:
+                    verify_research_status()
             
+            # Atualiza mensagem de status
             status_message = format_status_message(event)
             if status_message:
                 st.session_state.current_task = status_message
                 st.session_state.last_status_update = status_message
-                
+        
+        # Se processou eventos e a pesquisa está concluída, verifique o resultado final
+        if events_processed and not st.session_state.is_researching and not st.session_state.final_report:
+            verify_research_status()
+            
     except queue.Empty:
         pass
+
+def check_for_results():
+    """Verifica se há resultados disponíveis no backend"""
+    if not st.session_state.research_id:
+        return False
+        
+    try:
+        response = requests.get(
+            f"http://localhost:8000/research/{st.session_state.research_id}",
+            timeout=3
+        )
+        if response.status_code == 200:
+            result_data = response.json()
+            status = result_data.get("status", "")
+            
+            # Atualiza status
+            if status:
+                st.session_state.research_status = status
+            
+            # Se pesquisa concluída e temos resultado
+            if status in ["completed", "timeout", "failed", "cancelled"] and "result" in result_data:
+                if result_data["result"]:
+                    st.session_state.final_report = result_data["result"]
+                    st.session_state.is_researching = False
+                    return True
+            
+            # Se pesquisa concluída, marque is_researching como falso
+            if status in ["completed", "timeout", "failed", "cancelled"]:
+                st.session_state.is_researching = False
+                return True
+            
+            return False
+    except:
+        return False
 
 def check_backend_status():
     """Verifica se o backend está funcionando (com cache)"""
@@ -329,8 +505,12 @@ def start_research(query: str, max_iterations: int, llm_provider: str,
                 target=sse_consumer, 
                 args=(research_id, st.session_state.event_queue)
             )
-            st.session_state.sse_thread.daemon = True  # Corrigido: Thread daemon para finalizar com o programa principal
+            st.session_state.sse_thread.daemon = True
             st.session_state.sse_thread.start()
+            
+            # Iniciar temporizador para a pesquisa
+            st.session_state.research_start_time = time.time()
+            st.session_state.research_status = "running"
             
             return True
         else:
@@ -340,6 +520,21 @@ def start_research(query: str, max_iterations: int, llm_provider: str,
     except Exception as e:
         st.error(f"Erro ao conectar com backend: {str(e)}")
         return False
+
+def render_status_badge():
+    """Renderiza badge de status da pesquisa"""
+    status = st.session_state.research_status
+    
+    if status == "running":
+        st.markdown('<div class="status-badge status-running pulse">⚙️ EM ANDAMENTO</div>', unsafe_allow_html=True)
+    elif status == "completed":
+        st.markdown('<div class="status-badge status-complete">✅ CONCLUÍDO</div>', unsafe_allow_html=True)
+    elif status == "timeout":
+        st.markdown('<div class="status-badge status-warning">⏱️ TIMEOUT</div>', unsafe_allow_html=True)
+    elif status in ["failed", "error"]:
+        st.markdown('<div class="status-badge status-error">❌ ERRO</div>', unsafe_allow_html=True)
+    elif status == "cancelled":
+        st.markdown('<div class="status-badge status-warning">🛑 CANCELADO</div>', unsafe_allow_html=True)
 
 def main():
     initialize_session_state()
@@ -397,9 +592,19 @@ def main():
             "Máximo de iterações",
             min_value=1,
             max_value=10,
-            value=5,
+            value=2,
             help="Número máximo de ciclos de pesquisa"
         )
+        
+        # Opção para timeout
+        max_timeout = st.slider(
+            "Timeout (minutos)",
+            min_value=5,
+            max_value=60,
+            value=30,
+            help="Tempo máximo para execução da pesquisa"
+        )
+        st.session_state.max_research_time = max_timeout * 60  # Converte para segundos
 
     colPrincipal, colAndamento = st.columns([2, 1])
     
@@ -410,6 +615,7 @@ def main():
             "Digite sua consulta de pesquisa:",
             height=120,
             placeholder="Ex: Quais são as principais tendências em inteligência artificial para 2024? Como essas tecnologias estão impactando diferentes setores da economia?",
+            value='Quais são as principais tendências em inteligência artificial para 2024? Como essas tecnologias estão impactando diferentes setores da economia?',
             help="Seja específico e detalhado para obter melhores resultados"
         )
         
@@ -435,6 +641,7 @@ def main():
                 st.session_state.research_progress = 0
                 st.session_state.current_task = "Iniciando pesquisa..."
                 st.session_state.last_status_update = ""
+                st.session_state.research_status = "not_started"
                 
                 if start_research(query, max_iterations, llm_provider, api_key, model_name):
                     st.rerun()
@@ -449,6 +656,7 @@ def main():
                 st.session_state.is_researching = False
                 st.session_state.research_progress = 0
                 st.session_state.current_task = ""
+                st.session_state.research_status = "not_started"
                 st.rerun()
         
         with col3:
@@ -464,14 +672,21 @@ def main():
                         except:
                             pass
                     st.session_state.is_researching = False
+                    st.session_state.research_start_time = None
+                    st.session_state.research_status = "cancelled"
                     st.rerun()
-        
+
         
     with colAndamento:
         st.header("📊 Progresso da Pesquisa")
         
+        # Processa eventos da fila
         process_event_queue()
         
+        # Exibe badge de status
+        render_status_badge()
+        
+        # Exibe progresso e eventos
         if st.session_state.is_researching or st.session_state.real_time_events:
             
             status_label = st.session_state.current_task if st.session_state.current_task else "🔄 Aguardando atualizações..."
@@ -498,10 +713,13 @@ def main():
                         'report_complete': '📄',
                         'complete': '🎉',
                         'error': '❌',
+                        'timeout': '⏱️',
+                        'cancelled': '🛑',
                         'pipeline_start': '⚙️',
                         'decision': '🤔',
                         'connected': '🔗',
-                        'disconnected': '🔌'
+                        'disconnected': '🔌',
+                        'check_result': '🔄'
                     }
                     
                     icon = icons.get(event_type, '📌')
@@ -517,19 +735,27 @@ def main():
                                 status.write(f"   📄 {title}")
                     elif event_type == 'search_complete':
                         count = details.get('count', 0)
-                        status.write(f"{icon} **Busca concluída:** {count} resultados encontrados")
+                        status.write(f"{icon} **Busca concluída**")
                     elif event_type == 'analyze_complete':
                         iteration = details.get('iteration', 0)
                         status.write(f"{icon} **Análise concluída** - Iteração {iteration}")
                     elif event_type == 'report':
                         total = details.get('total_results', 0)
-                        status.write(f"{icon} **Gerando relatório final** ({total} resultados processados)")
+                        if total > 0:
+                            status.write(f"{icon} **Gerando relatório final** ({total} resultados processados)")
+                        status.write(f"{icon} **Gerando relatório final**")
                     elif event_type == 'complete':
                         status.write(f"{icon} **Pesquisa concluída com sucesso!**")
                     elif event_type == 'error':
                         status.write(f"{icon} **Erro:** {message}")
+                    elif event_type == 'timeout':
+                        status.write(f"{icon} **Timeout:** {message}")
+                    elif event_type == 'cancelled':
+                        status.write(f"{icon} **Cancelado:** {message}")
                     elif event_type == 'decision':
                         status.write(f"{icon} {message}")
+                    elif event_type == 'check_result':
+                        status.write(f"{icon} **Verificando resultado final**")
                     else:
                         status.write(f"{icon} {message}")
                     
@@ -544,20 +770,53 @@ def main():
 
         if st.session_state.final_report:
             st.success("✅ Relatório final disponível!")
-
+    
+    # VERIFICAÇÃO PERIÓDICA - Atualizado para ser mais robusto
+    if st.session_state.is_researching:
+        current_time = time.time()
+        # Verifica a cada 3 segundos
+        if current_time - st.session_state.last_check_time > 3:
+            st.session_state.last_check_time = current_time
+            
+            # Verificar se há resultados e atualizar o estado se necessário
+            if check_for_results():
+                st.rerun()
+            
+            # Verificar timeout da pesquisa
+            if st.session_state.research_start_time:
+                elapsed_time = current_time - st.session_state.research_start_time
+                if elapsed_time > st.session_state.max_research_time:
+                    st.session_state.is_researching = False
+                    st.session_state.research_status = "timeout"
+                    # Tentar buscar resultado parcial
+                    verify_research_status()
+                    st.rerun()
+    
+    # VERIFICAÇÃO ADICIONAL - Para garantir que eventos de conclusão sejam capturados
+    elif st.session_state.research_id and not st.session_state.final_report:
+        current_time = time.time()
+        # Verifica a cada 5 segundos se a pesquisa já concluiu mas não temos o relatório
+        if current_time - st.session_state.last_check_time > 5:
+            st.session_state.last_check_time = current_time
+            if verify_research_status():
+                st.rerun()
+    
+    # Exibe o relatório final se disponível
     if st.session_state.final_report:
-        st.header("###📋 Relatório Final")
-
-        st.markdown(f"<div class='research-container'><div class='report-content'>{st.session_state.final_report}</div></div>", unsafe_allow_html=True)
-
+        st.header("📋 Relatório Final")
+        
+        # Exibe o relatório markdown diretamente
+        with st.container():
+            st.markdown(st.session_state.final_report)
+        
         col1, col2, col3 = st.columns(3)
         
         with col1:
             st.download_button(
-                label="📥 Baixar Relatório (TXT)",
+                label="📥 Baixar Relatório (Markdown)",
                 data=st.session_state.final_report,
-                file_name=f"research_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                mime="text/plain"
+                file_name=f"research_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown"
             )
         
         with col2:
@@ -572,16 +831,18 @@ def main():
             if st.button("🔄 Nova Pesquisa"):
                 st.session_state.final_report = ""
                 st.session_state.real_time_events = []
+                st.session_state.research_status = "not_started"
                 st.rerun()
-        
+    
+    # Reexecuta enquanto estiver pesquisando
     if st.session_state.is_researching:
-        time.sleep(0.5)  # Pausa curta
+        time.sleep(0.5)
         st.rerun()
     
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666; padding: 20px;'>
-        <p><strong>🔍 Deep Research Service v2.0</strong></p>
+        <p><strong>🔍 Deep Research Service v3.0</strong></p>
         <p>🚀 Powered by Eduardo Gobatti </p>
     </div>
     """, unsafe_allow_html=True)
